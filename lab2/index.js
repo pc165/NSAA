@@ -15,8 +15,10 @@ const db = new sqlite3.Database(":memory:");
 
 const insertUser = async (username, password, description) => {
   const salt = crypto.randomBytes(16).toString("base64");
+
   const hashedPassword = await scryptMcf.hash(password, {
     saltBase64NoPadding: salt,
+    scryptParams: { logN: 18, r: 8, p: 2 },
   });
 
   db.run(
@@ -72,7 +74,7 @@ passport.use(
         [jwtPayload.sub],
         (err, row) => {
           if (err) {
-            return done(err, false);
+            return done(err);
           }
 
           return done(null, {
@@ -106,18 +108,14 @@ passport.use(
           }
 
           if (!user) {
-            return done(null, false, {
-              message: "Incorrect username or password.",
-            });
+            return done("Incorrect username or password.");
           }
 
           if (await scryptMcf.verify(password, user.password)) {
             return done(null, user);
           }
 
-          return done(null, false, {
-            message: "Incorrect username or password.",
-          });
+          return done("Incorrect username or password.");
         },
       );
     },
