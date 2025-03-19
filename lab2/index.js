@@ -1,6 +1,8 @@
 const express = require("express");
 const cookieParser = require("cookie-parser");
 const jwt = require("jsonwebtoken");
+const https = require("https");
+const fs = require("fs");
 const JwtStrategy = require("passport-jwt/lib/strategy");
 const { Strategy: LocalStrategy } = require("passport-local");
 const passport = require("passport");
@@ -104,7 +106,19 @@ app.get(
 app.use((req, res, next) => {
   res.status(500).send("Something broke!");
 });
+//
+// app.listen(port, () => {
+//   console.log(`Example app listening on port ${port}`);
+// });
 
-app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`);
-});
+https
+  .createServer(
+    {
+      cert: fs.readFileSync("localhost.crt"),
+      key: fs.readFileSync("localhost.key"),
+    },
+    app,
+  )
+  .listen(9443, () => {
+    console.log(`start https`);
+  });
