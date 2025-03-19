@@ -1,0 +1,9 @@
+FROM ubuntu:latest
+RUN apt-get update
+RUN apt-get install -y nodejs npm
+COPY ./index.js /
+COPY ./package.json /
+COPY ./package-lock.json /
+RUN npm i
+EXPOSE 9443
+CMD ['npm','run','start']
