@@ -7,9 +7,32 @@ const JwtStrategy = require("passport-jwt/lib/strategy");
 const { Strategy: LocalStrategy } = require("passport-local");
 const passport = require("passport");
 const app = express();
-const port = 3000;
 const jwtSecret = require("crypto").randomBytes(16);
 
+const sqlite3 = require("sqlite3").verbose();
+const db = new sqlite3.Database(":memory:");
+
+db.serialize(() => {
+  db.run(`CREATE TABLE USERS
+            (
+                id       UUID PRIMARY KEY,
+                username TEXT NOT NULL,
+                password TEXT NOT NULL
+            )
+    `);
+
+  const stmt = db.prepare(
+    "INSERT INTO USERS VALUES (lower(hex(randomblob(16))),?,?)",
+  );
+  stmt.run("walrus", "walrus");
+  stmt.finalize();
+
+  db.each("SELECT * FROM USERS", (err, row) => {
+    console.log(row);
+  });
+});
+
+db.close();
 app.use(cookieParser());
 app.use(express.urlencoded({ extended: true }));
 app.use(passport.initialize());
@@ -111,9 +134,9 @@ app.get(
 app.use((req, res, next) => {
   res.status(500).send("Something broke!");
 });
-//
-// app.listen(port, () => {
-//   console.log(`Example app listening on port ${port}`);
+
+// app.listen(3000, () => {
+//   console.log(`start http`);
 // });
 
 https
