@@ -127,7 +127,7 @@ app.get("/login", (req, res) => {
 });
 
 app.get("/logout", (req, res) => {
-  res.cookie("jwt", null);
+  res.clearCookie("jwt");
   res.send("logged out");
 });
 
