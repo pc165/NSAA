@@ -65,6 +65,11 @@ app.get("/login", (req, res) => {
   res.sendFile("login.html", { root: __dirname });
 });
 
+app.get("/logout", (req, res) => {
+  res.cookie("jwt", null);
+  res.send("logged out");
+});
+
 app.post(
   "/login",
   passport.authenticate("username-password", {
