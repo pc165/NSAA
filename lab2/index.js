@@ -10,6 +10,7 @@ const app = express();
 const crypto = require("crypto");
 const jwtSecret = crypto.randomBytes(16);
 const scryptMcf = require("scrypt-mcf");
+const { use } = require("express/lib/application");
 const sqlite3 = require("sqlite3").verbose();
 const db = new sqlite3.Database(":memory:");
 
@@ -53,6 +54,11 @@ db.serialize(async () => {
     "walrus",
     "one of the users that deserve to get to this server",
   );
+  await insertUser(
+    "midterm",
+    "midterm",
+    "one of the users that deserve to get to this server",
+  );
 });
 
 app.use(cookieParser());
@@ -73,7 +79,7 @@ passport.use(
                  WHERE id = ?`,
         [jwtPayload.sub],
         (err, row) => {
-          if (err) {
+          if (err || !row) {
             return done(err);
           }
 
@@ -140,11 +146,15 @@ app.post(
   (req, res) => {
     const jwtClaims = {
       sub: req.user.id,
-      iss: "localhost:3000",
-      aud: "localhost:3000",
-      exp: Math.floor(Date.now() / 1000) + 604800,
+      iss: "localhost:9443",
+      aud: "localhost:9443",
+      exp: (Date.now() + 3 * 24 * 60 * 60 * 1000) / 1000,
       role: "user",
     };
+
+    if (req.user.username === "midterm") {
+      jwtClaims["examiner"] = true;
+    }
 
     const token = jwt.sign(jwtClaims, jwtSecret);
     res.cookie("jwt", token, { httpOnly: true, secure: true });
@@ -167,6 +177,24 @@ app.get(
     res.send(
       `Welcome to your private page, ${req.user.username} ${req.user.description}, you are ${req.isFirefox ? "" : "not "}using firefox!`,
     );
+  },
+);
+app.get(
+  "/onlyexaminers",
+  passport.authenticate("jwtCookie", {
+    session: false,
+    failureRedirect: "/login",
+  }),
+  (req, res) => {
+    jwt.verify(req.cookies.jwt, jwtSecret, (err, decoded) => {
+      if (err) {
+        return res.status(403).send("Forbidden");
+      }
+      if (decoded.examiner) {
+        return res.send(`hello examiner`);
+      }
+    });
+    return res.status(403).send("Forbidden");
   },
 );
 
