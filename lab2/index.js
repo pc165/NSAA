@@ -10,12 +10,22 @@ const app = express();
 const crypto = require("crypto");
 const jwtSecret = crypto.randomBytes(16);
 const scryptMcf = require("scrypt-mcf");
-const { use } = require("express/lib/application");
 const sqlite3 = require("sqlite3").verbose();
 const db = new sqlite3.Database(":memory:");
+const session = require("express-session");
+const { discovery } = require("openid-client");
+const OpenIDConnectStrategy = require("openid-client/passport").Strategy;
+const dotenv = require("dotenv");
+dotenv.config();
+
+const insertUserFromOpenId = async (username, description) => {
+  const randomPassword = crypto.randomBytes(32).toString("base64");
+  return insertUser(username, randomPassword, description);
+};
 
 const insertUser = async (username, password, description) => {
   const salt = crypto.randomBytes(16).toString("base64");
+  const id = crypto.randomUUID().toString();
 
   const hashedPassword = await scryptMcf.hash(password, {
     saltBase64NoPadding: salt,
@@ -24,30 +34,32 @@ const insertUser = async (username, password, description) => {
 
   db.run(
     `INSERT INTO USERS
-         VALUES (lower(hex(randomblob(16))),
-                 $username,
-                 $password,
-                 $salt,
-                 $description)`,
+     VALUES ($id,
+             $username,
+             $password,
+             $salt,
+             $description)`,
     {
+      $id: id,
       $username: username,
       $salt: salt,
       $password: hashedPassword,
       $description: description,
     },
   );
+  return id;
 };
 
 db.serialize(async () => {
   db.run(`CREATE TABLE USERS
-            (
-                id          UUID PRIMARY KEY,
-                username    TEXT NOT NULL UNIQUE,
-                password    TEXT NOT NULL,
-                salt        TEXT NOT NULL,
-                description TEXT
-            )
-    `);
+          (
+            id          UUID PRIMARY KEY,
+            username    TEXT NOT NULL UNIQUE,
+            password    TEXT NOT NULL,
+            salt        TEXT NOT NULL,
+            description TEXT
+          )
+  `);
 
   await insertUser(
     "walrus",
@@ -61,8 +73,19 @@ db.serialize(async () => {
   );
 });
 
+passport.serializeUser((user, done) => done(null, user));
+
+passport.deserializeUser((user, done) => done(null, user));
+
 app.use(cookieParser());
 app.use(express.urlencoded({ extended: true }));
+app.use(
+  session({
+    secret: require("crypto").randomBytes(32).toString("base64url"),
+    resave: false,
+    saveUninitialized: false,
+  }),
+);
 app.use(passport.initialize());
 
 passport.use(
@@ -75,8 +98,8 @@ passport.use(
     (jwtPayload, done) => {
       db.get(
         `SELECT username, description
-                 FROM USERS
-                 WHERE id = ?`,
+         FROM USERS
+         WHERE id = ?`,
         [jwtPayload.sub],
         (err, row) => {
           if (err || !row) {
@@ -105,8 +128,8 @@ passport.use(
     (username, password, done) => {
       db.get(
         `SELECT id, username, password
-                 FROM USERS
-                 WHERE username = ?`,
+         FROM USERS
+         WHERE username = ?`,
         [username],
         async (err, user) => {
           if (err) {
@@ -179,6 +202,7 @@ app.get(
     );
   },
 );
+
 app.get(
   "/onlyexaminers",
   passport.authenticate("jwtCookie", {
@@ -198,18 +222,91 @@ app.get(
   },
 );
 
-app.use((req, res, next) => {
-  res.status(500).send("Something broke!");
-});
+app.get(
+  "/oidc/cb",
+  passport.authenticate("oidc", {
+    failureRedirect: "/login",
+    failureMessage: true,
+  }),
+  (req, res) => {
+    const jwtClaims = {
+      sub: req.user.sub,
+      iss: "localhost:9443",
+      aud: "localhost:9443",
+      exp: (Date.now() + 3 * 24 * 60 * 60 * 1000) / 1000,
+      role: "user",
+    };
 
-https
-  .createServer(
-    {
-      cert: fs.readFileSync("localhost.crt"),
-      key: fs.readFileSync("localhost.key"),
-    },
-    app,
-  )
-  .listen(9443, () => {
-    console.log(`start https`);
-  });
+    const token = jwt.sign(jwtClaims, jwtSecret);
+    res.cookie("jwt", token, { httpOnly: true, secure: true });
+    res.redirect("/");
+  },
+);
+
+app.get(
+  "/oidc/login",
+  passport.authenticate("oidc", { scope: "openid email" }),
+);
+
+(async () => {
+  try {
+    const oidcConfig = await discovery(
+      new URL(process.env.OIDC_PROVIDER),
+      process.env.OIDC_CLIENT_ID,
+      process.env.OIDC_CLIENT_SECRET,
+    );
+    passport.use(
+      "oidc",
+      new OpenIDConnectStrategy(
+        {
+          config: oidcConfig,
+          callbackURL: process.env.OIDC_CALLBACK_URL,
+        },
+        async (tokens, done) => {
+          const claims = tokens?.claims();
+
+          if (!claims) {
+            return done("no tokenSet or userInfo");
+          }
+
+          db.get(
+            `SELECT id, username
+             FROM USERS
+             WHERE username = ?`,
+            [claims.email],
+            async (err, user) => {
+              if (err) {
+                return done(err);
+              }
+
+              if (!user) {
+                const sub = await insertUserFromOpenId(
+                  claims.email,
+                  "Registered using openId!",
+                );
+                return done(null, { ...claims, sub });
+              }
+
+              return done(null, { ...claims, sub: user.id });
+            },
+          );
+        },
+      ),
+    );
+
+    https
+      .createServer(
+        {
+          cert: fs.readFileSync("localhost.crt"),
+          key: fs.readFileSync("localhost.key"),
+        },
+        app,
+      )
+      .listen(9443, () => {
+        console.log(`start https`);
+      });
+  } catch (e) {
+    console.log("Got error:\n", JSON.stringify(e, null, 2));
+    console.log(e);
+  }
+})();
