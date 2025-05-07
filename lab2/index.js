@@ -17,12 +17,30 @@ const session = require("express-session");
 const { discovery } = require("openid-client");
 const OpenIDConnectStrategy = require("openid-client/passport").Strategy;
 const Client = require("node-radius-client");
-
+const OAuth2Strategy = require("passport-oauth2");
 const {
   dictionaries: {
     rfc2865: { file, attributes },
   },
 } = require("node-radius-utils");
+
+const githubApi = (access_token) => {
+  const api = async (path) => {
+    const a = await fetch(`https://api.github.com/${path}`, {
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+        Accept: "application/vnd.github+json",
+      },
+    });
+    return await a.json();
+  };
+
+  return {
+    user: () => api("user"),
+    repos: () => api("user/repos"),
+  };
+};
 
 const radiusClient = new Client({
   host: "172.19.62.240", // ip a | grep eth0
@@ -98,6 +116,63 @@ app.use(
   }),
 );
 app.use(passport.initialize());
+
+app.use((req, res, next) => {
+  req.isFirefox = /Firefox/.test(req.headers["user-agent"]);
+  next();
+});
+
+app.use((req, res, next) => {
+  if (req.cookies.jwt) {
+    jwt.verify(req.cookies.jwt, jwtSecret, (err, decoded) => {
+      if (err) {
+        return res.status(403).send(JSON.stringify(err));
+      }
+      req.decodedJwt = decoded;
+      return next();
+    });
+  } else {
+    return next();
+  }
+});
+
+passport.use(
+  "oauth2",
+  new OAuth2Strategy(
+    {
+      authorizationURL: "https://github.com/login/oauth/authorize",
+      tokenURL: "https://github.com/login/oauth/access_token",
+      clientID: process.env.OAUTH2_GITHUB_ID,
+      clientSecret: process.env.OAUTH2_GITHUB_SECRET,
+      callbackURL: "https://localhost:9443/oauth2/cb",
+    },
+    async (accessToken, refreshToken, profile, done) => {
+      const github_user = await githubApi(accessToken).user();
+      console.log(github_user);
+      db.get(
+        `SELECT id, username
+         FROM USERS
+         WHERE username = ?`,
+        [github_user.login],
+        async (err, user) => {
+          if (err) {
+            return done(err);
+          }
+
+          if (!user) {
+            const id = await insertUserWithoutPassword(
+              github_user.login,
+              "Registered using oauth2!",
+            );
+            return done(null, { sub: id });
+          }
+
+          return done(null, { sub: user.id });
+        },
+      );
+    },
+  ),
+);
 
 passport.use(
   "jwtCookie",
@@ -219,11 +294,6 @@ app.get("/logout", (req, res) => {
   res.send("logged out");
 });
 
-app.use((req, res, next) => {
-  req.isFirefox = /Firefox/.test(req.headers["user-agent"]);
-  next();
-});
-
 app.get(
   "/",
   passport.authenticate("jwtCookie", {
@@ -244,14 +314,9 @@ app.get(
     failureRedirect: "/login",
   }),
   (req, res) => {
-    jwt.verify(req.cookies.jwt, jwtSecret, (err, decoded) => {
-      if (err) {
-        return res.status(403).send("Forbidden");
-      }
-      if (decoded.examiner) {
-        return res.send(`hello examiner`);
-      }
-    });
+    if (req.decodedJwt.examiner) {
+      return res.send(`hello examiner`);
+    }
     return res.status(403).send("Forbidden");
   },
 );
@@ -259,6 +324,14 @@ app.get(
 app.get(
   "/oidc/login",
   passport.authenticate("oidc", { scope: "openid email" }),
+);
+
+app.get(
+  "/oauth2/login",
+  passport.authenticate("oauth2", {
+    scope: "user,repo",
+    redirect_uri: "/oauth2/cb",
+  }),
 );
 
 const setJwtCookie = (req, res) => {
@@ -282,7 +355,16 @@ const setJwtCookie = (req, res) => {
 app.get(
   "/oidc/cb",
   passport.authenticate("oidc", {
-    failureRedirect: "/login",
+    failureRedirect: "/oidc/login",
+    failureMessage: true,
+  }),
+  setJwtCookie,
+);
+
+app.get(
+  "/oauth2/cb",
+  passport.authenticate("oauth2", {
+    failureRedirect: "/oauth2/login",
     failureMessage: true,
   }),
   setJwtCookie,
@@ -304,7 +386,7 @@ app.get("/login-radius", (req, res) => {
 app.post(
   "/login-radius",
   passport.authenticate("username-password-radius", {
-    failureRedirect: "/login",
+    failureRedirect: "/login-radius",
     session: false,
   }),
   setJwtCookie,
