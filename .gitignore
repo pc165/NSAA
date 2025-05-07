@@ -13,5 +13,6 @@
 /vcs.xml
 /.idea/
 */node_modules
+*/node_modules2
 *.mkv
 */.env

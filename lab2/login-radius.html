@@ -1,14 +1,13 @@
 <!doctype html>
-<html lang="en" xmlns="http://www.w3.org/1999/html">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <title>Login</title>
   </head>
 
   <body>
-    <p><strong>Want to access your personal web page?</strong></p>
-    <p>Please log in to proceed</p>
-    <form action="/login" method="post">
+    <p><strong>Radius login</strong></p>
+    <form action="/login-radius" method="post">
       <div>
         <label>Username:</label>
         <input type="text" name="username" />
@@ -21,8 +20,5 @@
         <input type="submit" value="Log In" />
       </div>
     </form>
-    <a href="/oidc/login">Login with Google</a>
-    <br>
-    <a href="/login-radius">Login with RADIUS</a>
   </body>
 </html>

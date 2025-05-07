@@ -1,0 +1,1 @@
+ docker run  --rm -v ./radius:/radius:ro -p 1812:1812/udp -it freeradius/freeradius-server:latest /bin/bash -c "./radius/setup.sh"

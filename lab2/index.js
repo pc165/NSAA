@@ -1,3 +1,4 @@
+require("dotenv").config();
 const express = require("express");
 const cookieParser = require("cookie-parser");
 const jwt = require("jsonwebtoken");
@@ -15,10 +16,20 @@ const db = new sqlite3.Database(":memory:");
 const session = require("express-session");
 const { discovery } = require("openid-client");
 const OpenIDConnectStrategy = require("openid-client/passport").Strategy;
-const dotenv = require("dotenv");
-dotenv.config();
+const Client = require("node-radius-client");
 
-const insertUserFromOpenId = async (username, description) => {
+const {
+  dictionaries: {
+    rfc2865: { file, attributes },
+  },
+} = require("node-radius-utils");
+
+const radiusClient = new Client({
+  host: "172.19.62.240", // ip a | grep eth0
+  dictionaries: [file],
+});
+
+const insertUserWithoutPassword = async (username, description) => {
   const randomPassword = crypto.randomBytes(32).toString("base64");
   return insertUser(username, randomPassword, description);
 };
@@ -141,12 +152,60 @@ passport.use(
           }
 
           if (await scryptMcf.verify(password, user.password)) {
-            return done(null, user);
+            return done(null, { sub: user.id, username: user.username });
           }
 
           return done("Incorrect username or password.");
         },
       );
+    },
+  ),
+);
+
+passport.use(
+  "username-password-radius",
+  new LocalStrategy(
+    {
+      usernameField: "username",
+      passwordField: "password",
+      session: false,
+    },
+    async (username, password, done) => {
+      await radiusClient
+        .accessRequest({
+          secret: process.env.RADIUS_SECRET,
+          attributes: [
+            [attributes.USER_NAME, username],
+            [attributes.USER_PASSWORD, password],
+          ],
+        })
+        .catch((err) => {
+          console.error(err);
+          return done("Incorrect username or password.");
+        })
+        .then(() => {
+          db.get(
+            `SELECT id, username
+             FROM USERS
+             WHERE username = ?`,
+            [username],
+            async (err, user) => {
+              if (err) {
+                return done(err);
+              }
+
+              if (!user) {
+                const id = await insertUserWithoutPassword(
+                  username,
+                  "Registered using radius!",
+                );
+                return done(null, { username, sub: id });
+              }
+
+              return done(null, user);
+            },
+          );
+        });
     },
   ),
 );
@@ -159,31 +218,6 @@ app.get("/logout", (req, res) => {
   res.clearCookie("jwt");
   res.send("logged out");
 });
-
-app.post(
-  "/login",
-  passport.authenticate("username-password", {
-    failureRedirect: "/login",
-    session: false,
-  }),
-  (req, res) => {
-    const jwtClaims = {
-      sub: req.user.id,
-      iss: "localhost:9443",
-      aud: "localhost:9443",
-      exp: (Date.now() + 3 * 24 * 60 * 60 * 1000) / 1000,
-      role: "user",
-    };
-
-    if (req.user.username === "midterm") {
-      jwtClaims["examiner"] = true;
-    }
-
-    const token = jwt.sign(jwtClaims, jwtSecret);
-    res.cookie("jwt", token, { httpOnly: true, secure: true });
-    res.redirect("/");
-  },
-);
 
 app.use((req, res, next) => {
   req.isFirefox = /Firefox/.test(req.headers["user-agent"]);
@@ -223,29 +257,57 @@ app.get(
 );
 
 app.get(
+  "/oidc/login",
+  passport.authenticate("oidc", { scope: "openid email" }),
+);
+
+const setJwtCookie = (req, res) => {
+  const jwtClaims = {
+    sub: req.user.sub,
+    iss: "localhost:9443",
+    aud: "localhost:9443",
+    exp: (Date.now() + 3 * 24 * 60 * 60 * 1000) / 1000,
+    role: "user",
+  };
+
+  if (req.user.username === "midterm") {
+    jwtClaims["examiner"] = true;
+  }
+
+  const token = jwt.sign(jwtClaims, jwtSecret);
+  res.cookie("jwt", token, { httpOnly: true, secure: true });
+  res.redirect("/");
+};
+
+app.get(
   "/oidc/cb",
   passport.authenticate("oidc", {
     failureRedirect: "/login",
     failureMessage: true,
   }),
-  (req, res) => {
-    const jwtClaims = {
-      sub: req.user.sub,
-      iss: "localhost:9443",
-      aud: "localhost:9443",
-      exp: (Date.now() + 3 * 24 * 60 * 60 * 1000) / 1000,
-      role: "user",
-    };
-
-    const token = jwt.sign(jwtClaims, jwtSecret);
-    res.cookie("jwt", token, { httpOnly: true, secure: true });
-    res.redirect("/");
-  },
+  setJwtCookie,
 );
 
-app.get(
-  "/oidc/login",
-  passport.authenticate("oidc", { scope: "openid email" }),
+app.post(
+  "/login",
+  passport.authenticate("username-password", {
+    failureRedirect: "/login",
+    session: false,
+  }),
+  setJwtCookie,
+);
+
+app.get("/login-radius", (req, res) => {
+  res.sendFile("login-radius.html", { root: __dirname });
+});
+
+app.post(
+  "/login-radius",
+  passport.authenticate("username-password-radius", {
+    failureRedirect: "/login",
+    session: false,
+  }),
+  setJwtCookie,
 );
 
 (async () => {
@@ -280,11 +342,11 @@ app.get(
               }
 
               if (!user) {
-                const sub = await insertUserFromOpenId(
+                const id = await insertUserWithoutPassword(
                   claims.email,
                   "Registered using openId!",
                 );
-                return done(null, { ...claims, sub });
+                return done(null, { ...claims, sub: id });
               }
 
               return done(null, { ...claims, sub: user.id });
