@@ -126,20 +126,6 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use((req, res, next) => {
-  if (req.cookies.jwt) {
-    jwt.verify(req.cookies.jwt, jwtSecret, (err, decoded) => {
-      if (err) {
-        return res.status(403).send(JSON.stringify(err));
-      }
-      req.decodedJwt = decoded;
-      return next();
-    });
-  } else {
-    return next();
-  }
-});
-
 passport.use(
   "oauth2",
   new OAuth2Strategy(
