@@ -18,11 +18,15 @@ const { discovery } = require("openid-client");
 const OpenIDConnectStrategy = require("openid-client/passport").Strategy;
 const Client = require("node-radius-client");
 const OAuth2Strategy = require("passport-oauth2");
+const morgan = require('morgan')
 const {
   dictionaries: {
     rfc2865: { file, attributes },
   },
 } = require("node-radius-utils");
+
+
+app.use(morgan(':method :url :status :res[content-length] - :response-time ms'))
 
 const githubApi = (access_token) => {
   const api = async (path) => {
@@ -322,11 +326,6 @@ app.get(
 );
 
 app.get(
-  "/oidc/login",
-  passport.authenticate("oidc", { scope: "openid email" }),
-);
-
-app.get(
   "/oauth2/login",
   passport.authenticate("oauth2", {
     scope: "user,repo",
@@ -353,15 +352,6 @@ const setJwtCookie = (req, res) => {
 };
 
 app.get(
-  "/oidc/cb",
-  passport.authenticate("oidc", {
-    failureRedirect: "/oidc/login",
-    failureMessage: true,
-  }),
-  setJwtCookie,
-);
-
-app.get(
   "/oauth2/cb",
   passport.authenticate("oauth2", {
     failureRedirect: "/oauth2/login",
@@ -379,10 +369,6 @@ app.post(
   setJwtCookie,
 );
 
-app.get("/login-radius", (req, res) => {
-  res.sendFile("login-radius.html", { root: __dirname });
-});
-
 app.post(
   "/login-radius",
   passport.authenticate("username-password-radius", {
@@ -390,6 +376,49 @@ app.post(
     session: false,
   }),
   setJwtCookie,
+);
+
+app.get("/login-radius", (req, res) => {
+  res.sendFile("login-radius.html", { root: __dirname });
+});
+
+app.get(
+  "/finalexam",
+  passport.authenticate("jwtCookie", {
+    session: false,
+    failureRedirect: "/login",
+  }),
+  (req, res) => {
+    const decoded = jwt.decode(req.cookies.jwt);
+    return res.send(`Hello ${decoded.given_name}`);
+  },
+);
+
+app.get(
+  "/oidc/login",
+  passport.authenticate("oidc", { scope: "openid email profile" }),
+);
+
+app.get(
+  "/oidc/cb",
+  passport.authenticate("oidc", {
+    failureRedirect: "/oidc/login",
+    failureMessage: true,
+  }),
+  (req, res) => {
+    const jwtClaims = {
+      sub: req.user.sub,
+      given_name: req.user.given_name,
+      iss: "localhost:9443",
+      aud: "localhost:9443",
+      exp: Math.floor((Date.now() + 3 * 24 * 60 * 60 * 1000) / 1000),
+      oidc: true,
+    };
+
+    const token = jwt.sign(jwtClaims, jwtSecret);
+    res.cookie("jwt", token, { httpOnly: true, secure: true });
+    res.redirect("/");
+  },
 );
 
 (async () => {
